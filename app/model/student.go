@@ -13,21 +13,21 @@ type Student struct {
 }
 
 // CreateUserRequest menampung data saat pendaftaran baru
-type CreateUserRequest struct {
+type CreateStudentRequest struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
 // ReplaceUserRequest menampung data untuk penggantian menyeluruh (PUT)
-type ReplaceUserRequest struct {
+type ReplaceStudentRequest struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
 	IsActive bool   `json:"is_active"`
 }
 
 // PatchUserRequest menampung data untuk pembaruan sebagian (PATCH)
-type PatchUserRequest struct {
+type PatchStudentRequest struct {
 	Username *string `json:"username"`
 	Email    *string `json:"email"`
 	IsActive *bool   `json:"is_active"`
