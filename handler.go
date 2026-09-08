@@ -74,7 +74,7 @@ func (h *StudentHandler) Create(c *fiber.Ctx) error {
 	ctx, cancel := reqCtx(c)
 	defer cancel()
 
-	var req model.CreateUserRequest
+	var req model.CreateStudentRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fail(c, fiber.StatusBadRequest, "body harus berupa JSON yang valid")
 	}
@@ -119,7 +119,7 @@ func (h *StudentHandler) Replace(c *fiber.Ctx) error {
 		return fail(c, fiber.StatusBadRequest, "id harus berupa angka positif")
 	}
 
-	var req model.ReplaceUserRequest
+	var req model.ReplaceStudentRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fail(c, fiber.StatusBadRequest, "body harus berupa JSON yang valid")
 	}
@@ -154,7 +154,7 @@ func (h *StudentHandler) Patch(c *fiber.Ctx) error {
 		return fail(c, fiber.StatusBadRequest, "id harus berupa angka positif")
 	}
 
-	var req model.PatchUserRequest
+	var req model.PatchStudentRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fail(c, fiber.StatusBadRequest, "body harus berupa JSON yang valid")
 	}
