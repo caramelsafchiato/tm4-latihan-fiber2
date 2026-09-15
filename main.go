@@ -12,12 +12,25 @@ import (
 	"latihan-fiber2/app/service"
 	"latihan-fiber2/config"
 	"latihan-fiber2/database"
+	"latihan-fiber2/helper"
+	"latihan-fiber2/route"
 )
+
+const minSecretLength = 32
 
 func main() {
 	// 1. Konfigurasi dan logger
 	config.LoadEnv()
 	logger := config.NewLogger()
+
+	// Rahasia diperiksa SEBELUM server menyala. Lebih baik gagal seketika
+	// daripada berjalan dengan token yang mudah dipalsukan.
+	jwtSecret := config.GetEnv("JWT_SECRET", "")
+	if len(jwtSecret) < minSecretLength {
+		logger.Error("JWT_SECRET tidak diisi atau terlalu pendek",
+			slog.Int("minimal_karakter", minSecretLength))
+		os.Exit(1)
+	}
 
 	// 2. Database
 	pool, err := database.NewPool(context.Background())
@@ -27,14 +40,46 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 3. Perakitan dari dalam ke luar: repository -> service
+	// 3. Persiapan JWT
+	jwtManager := helper.NewJWTManager(
+		jwtSecret,
+		config.GetEnv("JWT_ISSUER", "praktikum-backend"),
+		time.Duration(config.GetEnvInt("JWT_ACCESS_TTL_MINUTES", 15))*time.Minute,
+	)
+
+	// 4. Perakitan dari dalam ke luar: repository -> service
+	// -- Student & Juara (Lama) --
 	studentRepository := repository.NewStudentRepository(pool)
 	studentService := service.NewStudentService(studentRepository)
 
-	// 4. Aplikasi
-	app := config.NewApp(logger, pool, studentService)
+	juaraRepository := repository.NewJuaraRepository(pool)
+	juaraService := service.NewJuaraService(juaraRepository)
+
+	// -- User & Auth (Baru) --
+	userRepository := repository.NewUserRepository(pool)
+	tokenRepository := repository.NewTokenRepository(pool)
+
+	userService := service.NewUserService(userRepository)
+	authService := service.NewAuthService(
+		userRepository, tokenRepository, jwtManager,
+		time.Duration(config.GetEnvInt("JWT_REFRESH_TTL_DAYS", 7))*24*time.Hour,
+	)
+
+	// 5. Rakit semua dependencies untuk rute
+	deps := route.Dependencies{
+		Pool:           pool,
+		JWT:            jwtManager,
+		UserService:    userService,
+		AuthService:    authService,
+		StudentService: studentService,
+		JuaraService:   juaraService,
+	}
+
+	// 6. Inisialisasi Aplikasi
+	app := config.NewApp(logger, deps)
 	port := config.GetEnv("APP_PORT", "3000")
 
+	// 7. Jalankan server di goroutine agar tidak memblokir sinyal shutdown
 	go func() {
 		if err := app.Listen(":" + port); err != nil {
 			logger.Error("server berhenti", slog.String("error", err.Error()))
@@ -44,6 +89,7 @@ func main() {
 
 	logger.Info("server berjalan", slog.String("port", port))
 
+	// 8. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
