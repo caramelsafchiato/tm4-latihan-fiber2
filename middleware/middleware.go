@@ -20,7 +20,7 @@ func Register(app *fiber.App, logger *slog.Logger) {
 	app.Use(requestid.New()) // 1. beri setiap request satu ID unik
 	app.Use(recover.New())   // 2. tangkap panic agar server tidak mati
 	app.Use(helmet.New())    // 3. pasang header keamanan dasar
-	app.Use(cors.New())      // 4. atur Cross-Origin Resource Sharing
+	app.Use(corsPolicy(allowedOrigins))
 	app.Use(RequestLogger(logger)) // 5. catat setiap request
 }
 
@@ -64,4 +64,16 @@ func RequireJSON(c *fiber.Ctx) error {
 		}
 	}
 	return c.Next()
+}
+
+func corsPolicy(allowedOrigins string) fiber.Handler {
+	if strings.TrimSpace(allowedOrigins) == "" {
+		allowedOrigins = "http://localhost:5173"
+	}
+
+	return cors.New(cors.Config{
+		AllowOrigins: allowedOrigins,
+		AllowMethods: "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+		AllowHeaders: "Origin,Content-Type,Accept,Authorization",
+	})
 }
