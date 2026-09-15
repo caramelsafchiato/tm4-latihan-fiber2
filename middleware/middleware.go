@@ -16,12 +16,12 @@ import (
 
 // Register memasang seluruh middleware yang berlaku untuk semua route.
 // URUTAN PENTING: middleware dieksekusi sesuai urutan pemasangan.
-func Register(app *fiber.App, logger *slog.Logger) {
-	app.Use(requestid.New()) // 1. beri setiap request satu ID unik
-	app.Use(recover.New())   // 2. tangkap panic agar server tidak mati
-	app.Use(helmet.New())    // 3. pasang header keamanan dasar
-	app.Use(corsPolicy(allowedOrigins))
-	app.Use(RequestLogger(logger)) // 5. catat setiap request
+func Register(app *fiber.App, logger *slog.Logger, allowedOrigins string) {
+	app.Use(requestid.New())
+	app.Use(recover.New())
+	app.Use(helmet.New())
+	app.Use(corsPolicy(allowedOrigins)) 
+	app.Use(RequestLogger(logger))
 }
 
 // RequestLogger mencatat setiap request ke log terstruktur.

@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"tm 4-latihan-fiber2/app/model"
+	"latihan-fiber2/app/model"
 )
 
 type TokenRepository interface {
