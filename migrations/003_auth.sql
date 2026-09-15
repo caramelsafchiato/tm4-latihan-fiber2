@@ -1,11 +1,6 @@
--- Role disiapkan sekarang, tetapi baru dipakai untuk mengatur hak akses
--- pada pertemuan 6.
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user';
 
--- Refresh token disimpan sebagai HASH, bukan nilai aslinya.
--- Alasannya sama seperti password: bila isi table ini bocor, penyerang
--- tetap tidak memiliki token yang dapat dipakai.
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     id          BIGSERIAL   PRIMARY KEY,
     user_id     INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -17,3 +12,6 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 
 CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx
     ON refresh_tokens (user_id);
+
+-- Password lama berupa teks apa adanya dan tidak dapat diselamatkan.
+TRUNCATE users RESTART IDENTITY CASCADE;
