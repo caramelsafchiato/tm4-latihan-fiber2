@@ -221,3 +221,26 @@ func (s *AuthService) issueTokenPair(
 		ExpiresIn:    int(s.jwt.AccessTTL().Seconds()),
 	}, nil
 }
+
+func (s *AuthService) CheckRole(c *fiber.Ctx) error {
+    ctx, cancel := helper.RequestContext(c)
+    defer cancel()
+
+    // 1. Ambil identitas dari token menggunakan helper bawaanmu
+    authUser, ok := helper.CurrentUser(c)
+    if !ok {
+        return helper.Fail(c, fiber.StatusUnauthorized, "belum terautentikasi")
+    }
+
+    // 2. Cari user di database untuk mendapatkan role-nya
+    user, err := s.users.FindByID(ctx, authUser.UserID)
+    if err != nil {
+        return helper.Fail(c, fiber.StatusUnauthorized, "user tidak ditemukan")
+    }
+
+    // 3. Kembalikan respons yang isinya hanya username dan role
+    return helper.Success(c, fiber.StatusOK, "Berhasil mengecek role", fiber.Map{
+        "username": user.Username,
+        "role":     user.Role,
+    })
+}
