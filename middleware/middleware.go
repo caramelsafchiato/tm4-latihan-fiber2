@@ -14,8 +14,6 @@ import (
 	"latihan-fiber2/helper"
 )
 
-// Register memasang seluruh middleware yang berlaku untuk semua route.
-// URUTAN PENTING: middleware dieksekusi sesuai urutan pemasangan.
 func Register(app *fiber.App, logger *slog.Logger, allowedOrigins string) {
 	app.Use(requestid.New())
 	app.Use(recover.New())
@@ -24,9 +22,6 @@ func Register(app *fiber.App, logger *slog.Logger, allowedOrigins string) {
 	app.Use(RequestLogger(logger))
 }
 
-// RequestLogger mencatat setiap request ke log terstruktur.
-// Perhatikan polanya: fungsi yang MENGEMBALIKAN fungsi (closure) -
-// inilah cara middleware menerima dependensi dari luar.
 func RequestLogger(logger *slog.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
@@ -35,14 +30,23 @@ func RequestLogger(logger *slog.Logger) fiber.Handler {
 
 		requestID, _ := c.Locals("requestid").(string)
 
-		logger.Info("http_request",
+		attrs := []any{
 			slog.String("request_id", requestID),
 			slog.String("method", c.Method()),
 			slog.String("path", c.Path()),
 			slog.Int("status", c.Response().StatusCode()),
 			slog.Duration("duration", time.Since(start)),
 			slog.String("ip", c.IP()),
-		)
+		}
+
+		if user, ok := helper.CurrentUser(c); ok {
+			attrs = append(attrs,
+				slog.Int("user_id", user.UserID),
+				slog.String("role", user.Role),
+			)
+		}
+
+		logger.Info("http_request", attrs...)
 
 		return err
 	}
@@ -54,8 +58,6 @@ var methodsWithBody = map[string]bool{
 	fiber.MethodPatch: true,
 }
 
-// RequireJSON menolak request berisi body yang Content-Type-nya bukan JSON.
-// Dipasang per grup route, bukan global.
 func RequireJSON(c *fiber.Ctx) error {
 	if methodsWithBody[c.Method()] {
 		ct := c.Get("Content-Type")
