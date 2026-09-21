@@ -16,10 +16,12 @@ import (
 type Dependencies struct {
 	Pool           *pgxpool.Pool
 	JWT            *helper.JWTManager
+	Permissions    *helper.PermissionSet
 	UserService    *service.UserService
 	AuthService    *service.AuthService
 	StudentService *service.StudentService
 	JuaraService   *service.JuaraService
+	NilaiService   *service.NilaiService
 }
 
 func Register(app *fiber.App, deps Dependencies) {
@@ -35,16 +37,36 @@ func Register(app *fiber.App, deps Dependencies) {
 	auth.Post("/refresh", deps.AuthService.Refresh)
 	auth.Post("/logout", deps.AuthService.Logout)
 	auth.Get("/me", middleware.RequireAuth(deps.JWT), deps.AuthService.Me)
+	auth.Get("/check-role", middleware.RequireAuth(deps.JWT), deps.AuthService.CheckRole)
 
-	// --- users: wajib membawa access token ---
+	// --- wajib login, hak akses diperiksa per endpoint ---
 	users := api.Group("/users",
-		middleware.RequireJSON, middleware.RequireAuth(deps.JWT))
-	users.Get("/", deps.UserService.List)
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT))
+
+	perms := deps.Permissions
+
+	// Hak dapat diputuskan tanpa melihat data -> middleware.
+	users.Get("/",
+		middleware.RequirePermission(perms, "user:list"),
+		deps.UserService.List)
+
+	users.Post("/",
+		middleware.RequirePermission(perms, "user:update:any"),
+		deps.UserService.Create)
+
+	users.Delete("/:id",
+		middleware.RequirePermission(perms, "user:delete"),
+		deps.UserService.Delete)
+
+	users.Patch("/:id/role",
+		middleware.RequirePermission(perms, "role:assign"),
+		deps.UserService.AssignRole)
+
+	// Hak bergantung pada kepemilikan data -> diperiksa di service.
 	users.Get("/:id", deps.UserService.Get)
-	users.Post("/", deps.UserService.Create)
 	users.Put("/:id", deps.UserService.Replace)
 	users.Patch("/:id", deps.UserService.Patch)
-	users.Delete("/:id", deps.UserService.Delete)
 
 	// --- students (rute dari pertemuan sebelumnya) ---
 	students := api.Group("/students", middleware.RequireJSON)
@@ -57,6 +79,9 @@ func Register(app *fiber.App, deps Dependencies) {
 
 	// --- juara (rute dari pertemuan sebelumnya) ---
 	api.Get("/students/:id/juaras", deps.JuaraService.GetByStudent)
+
+	// --- nilai (rute baru) ---
+	api.Get("/students/:id/nilais", middleware.RequireAuth(deps.JWT), deps.NilaiService.GetByStudent)
 }
 
 // healthCheck melaporkan kondisi layanan beserta databasenya.
