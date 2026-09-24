@@ -68,14 +68,29 @@ func Register(app *fiber.App, deps Dependencies) {
 	users.Put("/:id", deps.UserService.Replace)
 	users.Patch("/:id", deps.UserService.Patch)
 
-	// --- students (rute dari pertemuan sebelumnya) ---
-	students := api.Group("/students", middleware.RequireJSON)
-	students.Get("/", deps.StudentService.List)
+	// Tambahkan RequireAuth agar semua request ke /students wajib pakai token
+	students := api.Group("/students", 
+		middleware.RequireJSON, 
+		middleware.RequireAuth(deps.JWT),
+	)
+
+	// Hak dapat diputuskan tanpa melihat data -> pasang di middleware
+	students.Get("/", 
+		middleware.RequirePermission(perms, "student:list"), 
+		deps.StudentService.List)
+
+	students.Post("/", 
+		middleware.RequirePermission(perms, "student:create"), 
+		deps.StudentService.Create)
+
+	students.Delete("/:id", 
+		middleware.RequirePermission(perms, "student:delete"), 
+		deps.StudentService.Delete)
+
+	// Hak bergantung pada kepemilikan data (owner_id) -> diperiksa di service
 	students.Get("/:id", deps.StudentService.Get)
-	students.Post("/", deps.StudentService.Create)
 	students.Put("/:id", deps.StudentService.Replace)
 	students.Patch("/:id", deps.StudentService.Patch)
-	students.Delete("/:id", deps.StudentService.Delete)
 
 	// --- juara (rute dari pertemuan sebelumnya) ---
 	api.Get("/students/:id/juaras", deps.JuaraService.GetByStudent)
