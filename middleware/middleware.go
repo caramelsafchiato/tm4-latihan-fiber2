@@ -25,20 +25,36 @@ func Register(app *fiber.App, logger *slog.Logger, allowedOrigins string) {
 func RequestLogger(logger *slog.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
-
-		err := c.Next() // serahkan ke middleware/handler berikutnya
-
+		err := c.Next()
 		requestID, _ := c.Locals("requestid").(string)
+
+		// Sejak handler mengembalikan error alih-alih menulis response sendiri,
+		// status pada c.Response() BELUM terisi ketika baris ini dijalankan:
+		// ErrorHandler baru berjalan setelah seluruh rangkaian middleware selesai.
+		// Tanpa koreksi di bawah, setiap kegagalan tercatat sebagai 200.
+		
+		// [PERBAIKAN COMPILER ERROR]: Gunakan := bukan :
+		status := c.Response().StatusCode()
+		
+		if err != nil {
+			var appErr *helper.AppError
+			if errors.As(err, &appErr) {
+				status = appErr.Status
+			} else {
+				status = fiber.StatusInternalServerError
+			}
+		}
 
 		attrs := []any{
 			slog.String("request_id", requestID),
 			slog.String("method", c.Method()),
 			slog.String("path", c.Path()),
-			slog.Int("status", c.Response().StatusCode()),
+			// [PERBAIKAN LOGIKA]: Gunakan variabel 'status', bukan fungsi aslinya
+			slog.Int("status", status),
 			slog.Duration("duration", time.Since(start)),
 			slog.String("ip", c.IP()),
 		}
-
+		
 		if user, ok := helper.CurrentUser(c); ok {
 			attrs = append(attrs,
 				slog.Int("user_id", user.UserID),
