@@ -10,6 +10,7 @@ type Student struct {
 	Password  string    `json:"password,omitempty"`
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
+	OwnerID   int       `json:"owner_id"` 
 }
 
 // CreateUserRequest menampung data saat pendaftaran baru
