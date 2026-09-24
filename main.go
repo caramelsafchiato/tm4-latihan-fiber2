@@ -50,7 +50,6 @@ func main() {
 	// 4. Perakitan dari dalam ke luar: repository -> service
 	// -- Student & Juara (Lama) --
 	studentRepository := repository.NewStudentRepository(pool)
-	studentService := service.NewStudentService(studentRepository)
 
 	//nilai
 	nilaiRepository := repository.NewNilaiRepository(pool)
@@ -74,6 +73,8 @@ func main() {
 	}
 	permissions := helper.NewPermissionSet(rawPermissions)
 	logger.Info("permission dimuat", slog.Any("roles", permissions.KnownRoles()))
+
+	studentService := service.NewStudentService(studentRepository, permissions)
 
 	// Masukkan parameter permissions ke dalam UserService dan AuthService
 	userService := service.NewUserService(userRepository, permissions)
