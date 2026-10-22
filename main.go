@@ -51,21 +51,20 @@ func main() {
 	// -- Student & Juara (Lama) --
 	studentRepository := repository.NewStudentRepository(pool)
 
-	//nilai
-	nilaiRepository := repository.NewNilaiRepository(pool)
-	nilaiService := service.NewNilaiService(nilaiRepository)
-
 	juaraRepository := repository.NewJuaraRepository(pool)
 	juaraService := service.NewJuaraService(juaraRepository)
 
 	// -- User, Auth & Role (Baru) --
 	userRepository := repository.NewUserRepository(pool)
 	tokenRepository := repository.NewTokenRepository(pool)
-	roleRepository := repository.NewRoleRepository(pool) // <-- TAMBAHAN LANGKAH 4
+	roleRepository := repository.NewRoleRepository(pool) 
+
+	// -- Course & Transaksi (Tambahan Modul 9) --
+	txManager := repository.NewTxManager(pool)
+	courseRepository := repository.NewCourseRepository(pool)
+	courseService := service.NewCourseService(courseRepository, txManager)
 
 	// Pemetaan role ke permission dibaca SEKALI saat aplikasi menyala.
-	// Konsekuensinya: perubahan hak akses di database baru berlaku setelah
-	// aplikasi dijalankan ulang. Itu keputusan sadar, bukan kelalaian.
 	rawPermissions, err := roleRepository.LoadPermissions(context.Background())
 	if err != nil {
 		logger.Error("gagal memuat permission", slog.String("error", err.Error()))
@@ -76,7 +75,6 @@ func main() {
 
 	studentService := service.NewStudentService(studentRepository, permissions)
 
-	// Masukkan parameter permissions ke dalam UserService dan AuthService
 	userService := service.NewUserService(userRepository, permissions)
 	authService := service.NewAuthService(
 		userRepository, tokenRepository, jwtManager, permissions,
@@ -87,12 +85,12 @@ func main() {
 	deps := route.Dependencies{
 		Pool:           pool,
 		JWT:            jwtManager,
-		Permissions:    permissions, // <-- TAMBAHAN LANGKAH 4
+		Permissions:    permissions,
 		UserService:    userService,
 		AuthService:    authService,
 		StudentService: studentService,
 		JuaraService:   juaraService,
-		NilaiService:   nilaiService,
+		CourseService:  courseService,
 	}
 
 	// 6. Inisialisasi Aplikasi

@@ -13,10 +13,7 @@ import (
 )
 
 // Sentinel error
-var (
-	ErrNotFound  = errors.New("data tidak ditemukan")
-	ErrDuplicate = errors.New("data sudah ada")
-)
+// (moved to avoid duplicate declaration)
 
 // StudentRepository adalah KONTRAK penyimpanan data mahasiswa.
 type StudentRepository interface {
