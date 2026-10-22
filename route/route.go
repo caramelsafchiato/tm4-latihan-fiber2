@@ -21,7 +21,7 @@ type Dependencies struct {
 	AuthService    *service.AuthService
 	StudentService *service.StudentService
 	JuaraService   *service.JuaraService
-	NilaiService   *service.NilaiService
+	CourseService  *service.CourseService // <-- TAMBAHAN MODUL 9
 }
 
 func Register(app *fiber.App, deps Dependencies) {
@@ -69,22 +69,22 @@ func Register(app *fiber.App, deps Dependencies) {
 	users.Patch("/:id", deps.UserService.Patch)
 
 	// Tambahkan RequireAuth agar semua request ke /students wajib pakai token
-	students := api.Group("/students", 
-		middleware.RequireJSON, 
+	students := api.Group("/students",
+		middleware.RequireJSON,
 		middleware.RequireAuth(deps.JWT),
 	)
 
 	// Hak dapat diputuskan tanpa melihat data -> pasang di middleware
-	students.Get("/", 
-		middleware.RequirePermission(perms, "student:list"), 
+	students.Get("/",
+		middleware.RequirePermission(perms, "student:list"),
 		deps.StudentService.List)
 
-	students.Post("/", 
-		middleware.RequirePermission(perms, "student:create"), 
+	students.Post("/",
+		middleware.RequirePermission(perms, "student:create"),
 		deps.StudentService.Create)
 
-	students.Delete("/:id", 
-		middleware.RequirePermission(perms, "student:delete"), 
+	students.Delete("/:id",
+		middleware.RequirePermission(perms, "student:delete"),
 		deps.StudentService.Delete)
 
 	// Hak bergantung pada kepemilikan data (owner_id) -> diperiksa di service
@@ -95,8 +95,25 @@ func Register(app *fiber.App, deps Dependencies) {
 	// --- juara (rute dari pertemuan sebelumnya) ---
 	api.Get("/students/:id/juaras", deps.JuaraService.GetByStudent)
 
-	// --- nilai (rute baru) ---
-	api.Get("/students/:id/nilais", middleware.RequireAuth(deps.JWT), deps.NilaiService.GetByStudent)
+	// --- kelas dan KRS (Tambahan Modul 9) ---
+	courses := api.Group("/courses",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+
+	// "/mine" didaftarkan SEBELUM "/:id". Fiber mencocokkan route sesuai urutan pendaftaran
+	courses.Get("/", deps.CourseService.List)
+	courses.Get("/mine", deps.CourseService.Mine)
+	courses.Get("/:id", deps.CourseService.Get)
+	courses.Post("/:id/enroll", deps.CourseService.Enroll)
+	courses.Delete("/:id/enroll", deps.CourseService.Drop)
+	courses.Patch("/:id", middleware.RequirePermission(perms, "course:manage"), deps.CourseService.UpdateQuota)
+
+	enrollments := api.Group("/enrollments",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+	enrollments.Post("/swap", deps.CourseService.Swap)
 }
 
 // healthCheck melaporkan kondisi layanan beserta databasenya.
