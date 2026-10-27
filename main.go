@@ -40,7 +40,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 2b. Database MongoDB (Tambahan Langkah 3)
+	// 2b. Database MongoDB
 	mongoClient, err := database.NewMongoClient(context.Background())
 	if err != nil {
 		logger.Error("gagal terhubung ke MongoDB", slog.String("error", err.Error()))
@@ -52,7 +52,7 @@ func main() {
 		_ = mongoClient.Disconnect(ctx)
 	}()
 
-	_ = mongoClient.Database(config.GetEnv("MONGO_DATABASE", "praktikum_backend"))
+	mongoDB := mongoClient.Database(config.GetEnv("MONGO_DATABASE", "praktikum_backend"))
 
 	// 3. Persiapan JWT
 	jwtManager := helper.NewJWTManager(
@@ -73,10 +73,17 @@ func main() {
 	tokenRepository := repository.NewTokenRepository(pool)
 	roleRepository := repository.NewRoleRepository(pool)
 
-	// -- Course & Transaksi (Tambahan Modul 9) --
+	// -- Course & Transaksi (Modul 9) --
 	txManager := repository.NewTxManager(pool)
 	courseRepository := repository.NewCourseRepository(pool)
 	courseService := service.NewCourseService(courseRepository, txManager)
+
+	// -- Review MongoDB (Modul 10) --
+	reviewRepository := repository.NewReviewRepository(mongoDB)
+	if err := reviewRepository.EnsureIndexes(context.Background()); err != nil {
+		logger.Error("gagal membuat index MongoDB", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 
 	// Pemetaan role ke permission dibaca SEKALI saat aplikasi menyala.
 	rawPermissions, err := roleRepository.LoadPermissions(context.Background())
@@ -88,12 +95,12 @@ func main() {
 	logger.Info("permission dimuat", slog.Any("roles", permissions.KnownRoles()))
 
 	studentService := service.NewStudentService(studentRepository, permissions)
-
 	userService := service.NewUserService(userRepository, permissions)
 	authService := service.NewAuthService(
 		userRepository, tokenRepository, jwtManager, permissions,
 		time.Duration(config.GetEnvInt("JWT_REFRESH_TTL_DAYS", 7))*24*time.Hour,
 	)
+	reviewService := service.NewReviewService(reviewRepository, courseRepository, permissions)
 
 	// 5. Rakit semua dependencies untuk rute
 	deps := route.Dependencies{
@@ -105,7 +112,8 @@ func main() {
 		StudentService: studentService,
 		JuaraService:   juaraService,
 		CourseService:  courseService,
-		Mongo:          mongoClient, // <-- Tambahan koneksi MongoDB
+		Mongo:          mongoClient,
+		ReviewService:  reviewService,
 	}
 
 	// 6. Inisialisasi Aplikasi
