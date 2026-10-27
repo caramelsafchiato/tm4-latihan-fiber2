@@ -1,44 +1,81 @@
 package helper
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
-
-	"golang.org/x/crypto/bcrypt"
+	"strconv"
+	"strings"
 )
 
-// bcryptCost menentukan berapa kali proses hashing diulang secara internal.
-// Semakin besar, semakin lambat pula percobaan menebak password satu per satu.
-// Nilai 12 adalah kompromi yang lazim: cukup lambat bagi penyerang,
-// masih cukup cepat untuk sekali login.
-const bcryptCost = 12
+// passwordIterations mengatur biaya hashing password.
+const passwordIterations = 310000
 
 // dummyHash dipakai ketika username tidak ditemukan, agar waktu tanggap
 // login tetap mirip dengan kasus password salah. Tanpa ini, selisih waktu
 // respons membocorkan username mana yang terdaftar (timing attack).
-var dummyHash = []byte("$2a$12$abcdefghijklmnopqrstuuLKa3Bt1TCmU/6zvhZ8x4nq1yBiuGvS")
+const dummySalt = "security-dummy-salt"
 
 // HashPassword mengubah password menjadi hash yang tidak dapat dikembalikan.
 // bcrypt menyisipkan salt acak ke dalam hasilnya, sehingga dua user dengan
 // password sama tetap menghasilkan hash yang berbeda.
 func HashPassword(plain string) (string, error) {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcryptCost)
-	if err != nil {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	return string(hashed), nil
+	hash := derivePassword([]byte(plain), salt, passwordIterations)
+	return "$pbkdf2-sha256$" + strconv.Itoa(passwordIterations) + "$" +
+		base64.RawURLEncoding.EncodeToString(salt) + "$" +
+		base64.RawURLEncoding.EncodeToString(hash), nil
 }
 
 // VerifyPassword membandingkan password dengan hash-nya.
 func VerifyPassword(hash, plain string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)) == nil
+	parts := strings.Split(hash, "$")
+	if len(parts) != 5 || parts[1] != "pbkdf2-sha256" {
+		return false
+	}
+	iterations, err := strconv.Atoi(parts[2])
+	if err != nil || iterations < 1 || iterations > 2000000 {
+		return false
+	}
+	salt, err := base64.RawURLEncoding.DecodeString(parts[3])
+	if err != nil || len(salt) == 0 {
+		return false
+	}
+	expected, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil || len(expected) != sha256.Size {
+		return false
+	}
+	actual := derivePassword([]byte(plain), salt, iterations)
+	return hmac.Equal(actual, expected)
 }
 
 // VerifyDummyPassword sengaja membuang waktu seperti VerifyPassword,
 // dipakai ketika username tidak ditemukan.
 func VerifyDummyPassword(plain string) {
-	_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(plain))
+	_ = derivePassword([]byte(plain), []byte(dummySalt), passwordIterations)
+}
+
+// derivePassword implements PBKDF2-HMAC-SHA256 for one SHA-256-sized block.
+func derivePassword(password, salt []byte, iterations int) []byte {
+	block := append(append([]byte(nil), salt...), 0, 0, 0, 1)
+	mac := hmac.New(sha256.New, password)
+	_, _ = mac.Write(block)
+	u := mac.Sum(nil)
+	result := append([]byte(nil), u...)
+	for i := 1; i < iterations; i++ {
+		mac.Reset()
+		_, _ = mac.Write(u)
+		u = mac.Sum(nil)
+		for j := range result {
+			result[j] ^= u[j]
+		}
+	}
+	return result
 }
 
 // RandomToken menghasilkan string acak yang aman secara kriptografis.
