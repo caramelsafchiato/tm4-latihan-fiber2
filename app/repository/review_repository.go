@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -215,44 +216,126 @@ func (r *reviewMongoRepository) FindByCourse(ctx context.Context, q model.Review
 	return result, nil
 }
 
+func (r *reviewMongoRepository) Summary(ctx context.Context, courseID int) (model.ReviewSummary, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"course_id": courseID}}},
+		{{Key: "$facet", Value: bson.M{
+			"stats": bson.A{
+				bson.M{"$group": bson.M{
+					"_id":   nil,
+					"count": bson.M{"$sum": 1},
+					"avg":   bson.M{"$avg": "$rating"},
+				}},
+			},
+			"distribution": bson.A{
+				bson.M{"$group": bson.M{"_id": "$rating", "total": bson.M{"$sum": 1}}},
+			},
+			"top_tags": bson.A{
+				bson.M{"$unwind": "$tags"},
+				bson.M{"$group": bson.M{"_id": "$tags", "total": bson.M{"$sum": 1}}},
+				bson.M{"$sort": bson.D{{Key: "total", Value: -1}, {Key: "_id", Value: 1}}},
+				bson.M{"$limit": 5},
+			},
+		}}},
+	}
+
+	cursor, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return model.ReviewSummary{}, fmt.Errorf("meringkas ulasan: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var out []struct {
+		Stats []struct {
+			Count int     `bson:"count"`
+			Avg   float64 `bson:"avg"`
+		} `bson:"stats"`
+		Distribution []struct {
+			Rating int `bson:"_id"`
+			Total  int `bson:"total"`
+		} `bson:"distribution"`
+		TopTags []struct {
+			Tag   string `bson:"_id"`
+			Total int    `bson:"total"`
+		} `bson:"top_tags"`
+	}
+	if err := cursor.All(ctx, &out); err != nil {
+		return model.ReviewSummary{}, fmt.Errorf("membaca ringkasan: %w", err)
+	}
+
+	summary := model.ReviewSummary{
+		CourseID:     courseID,
+		Distribution: map[string]int{"1": 0, "2": 0, "3": 0, "4": 0, "5": 0},
+		TopTags:      []model.TagCount{},
+	}
+
+	if len(out) == 0 {
+		return summary, nil
+	}
+
+	if len(out[0].Stats) > 0 {
+		summary.Count = out[0].Stats[0].Count
+		// Dibulatkan dua angka di belakang koma agar mudah dibaca.
+		summary.AverageRating = float64(int(out[0].Stats[0].Avg*100+0.5)) / 100
+	}
+
+	for _, d := range out[0].Distribution {
+		summary.Distribution[strconv.Itoa(d.Rating)] = d.Total
+	}
+
+	for _, t := range out[0].TopTags {
+		summary.TopTags = append(summary.TopTags, model.TagCount{Tag: t.Tag, Total: t.Total})
+	}
+
+	return summary, nil
+}
+
 func (r *reviewMongoRepository) UpdateOwn(ctx context.Context, id string, userID int, req model.UpdateReviewRequest) (model.Review, error) {
 	oid, err := parseID(id)
 	if err != nil {
 		return model.Review{}, err
 	}
 
-	updateFields := bson.M{"updated_at": now()}
+	set := bson.M{"updated_at": now()}
 	if req.Rating != nil {
-		updateFields["rating"] = *req.Rating
+		set["rating"] = *req.Rating
 	}
 	if req.Comment != nil {
-		updateFields["comment"] = *req.Comment
+		set["comment"] = *req.Comment
 	}
 	if req.Tags != nil {
-		updateFields["tags"] = *req.Tags
+		set["tags"] = *req.Tags
 	}
 
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-	var updatedDoc reviewDocument
+
+	var doc reviewDocument
 	err = r.coll.FindOneAndUpdate(
 		ctx,
 		bson.M{"_id": oid, "user_id": userID},
-		bson.M{"$set": updateFields},
+		bson.M{"$set": set},
 		opts,
-	).Decode(&updatedDoc)
-
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			var existing reviewDocument
-			if errCheck := r.coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&existing); errCheck != nil {
-				return model.Review{}, ErrNotFound
-			}
-			return model.Review{}, ErrNotOwner
-		}
+	).Decode(&doc)
+	if err == nil {
+		return doc.toModel(), nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
 		return model.Review{}, fmt.Errorf("mengubah ulasan: %w", err)
 	}
+	return model.Review{}, r.whyNoMatch(ctx, oid)
+}
 
-	return updatedDoc.toModel(), nil
+// whyNoMatch membedakan "ulasannya tidak ada" dari "ulasannya ada, tetapi
+// bukan milik Anda" setelah sebuah operasi bersyarat tidak mengenai dokumen.
+func (r *reviewMongoRepository) whyNoMatch(ctx context.Context, oid bson.ObjectID) error {
+	count, err := r.coll.CountDocuments(ctx, bson.M{"_id": oid})
+	if err != nil {
+		return fmt.Errorf("memeriksa ulasan: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return ErrNotOwner
 }
 
 func (r *reviewMongoRepository) Delete(ctx context.Context, id string, userID int, anyOwner bool) error {
@@ -271,185 +354,100 @@ func (r *reviewMongoRepository) Delete(ctx context.Context, id string, userID in
 		return fmt.Errorf("menghapus ulasan: %w", err)
 	}
 	if res.DeletedCount == 0 {
-		var existing reviewDocument
-		if errCheck := r.coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&existing); errCheck != nil {
-			return ErrNotFound
-		}
-		return ErrNotOwner
+		return r.whyNoMatch(ctx, oid)
 	}
 	return nil
 }
 
+// AddReply menambahkan satu balasan ke dalam array replies.
+//
+// Syarat "replies.49 tidak ada" berarti array belum berisi 50 elemen
+// (indeks 0 sampai 49). Pemeriksaan batas dan penambahan terjadi dalam satu
+// operasi, sehingga dua balasan serentak tidak dapat sama-sama lolos ketika
+// tinggal satu tempat tersisa.
 func (r *reviewMongoRepository) AddReply(ctx context.Context, id string, reply model.Reply) (model.Review, error) {
 	oid, err := parseID(id)
 	if err != nil {
 		return model.Review{}, err
 	}
 
-	replyDoc := replyDocument{
+	doc := replyDocument{
 		ID:        bson.NewObjectID(),
 		UserID:    reply.UserID,
 		Username:  reply.Username,
 		Body:      reply.Body,
 		CreatedAt: now(),
 	}
+	limitField := "replies." + strconv.Itoa(MaxRepliesPerReview-1)
 
-	filter := bson.M{
-		"_id": oid,
-		"$expr": bson.M{
-			"$lt": bson.A{bson.M{"$size": "$replies"}, MaxRepliesPerReview},
-		},
-	}
-
-	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-	var updatedDoc reviewDocument
+	var updated reviewDocument
 	err = r.coll.FindOneAndUpdate(
 		ctx,
-		filter,
-		bson.M{
-			"$push": bson.M{"replies": replyDoc},
-			"$set":  bson.M{"updated_at": now()},
-		},
-		opts,
-	).Decode(&updatedDoc)
-
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			var existing reviewDocument
-			if errCheck := r.coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&existing); errCheck != nil {
-				return model.Review{}, ErrNotFound
-			}
-			if len(existing.Replies) >= MaxRepliesPerReview {
-				return model.Review{}, ErrReplyLimit
-			}
-		}
-		return model.Review{}, fmt.Errorf("menambahkan balasan: %w", err)
+		bson.M{"_id": oid, limitField: bson.M{"$exists": false}},
+		bson.M{"$push": bson.M{"replies": doc}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&updated)
+	if err == nil {
+		return updated.toModel(), nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return model.Review{}, fmt.Errorf("menambah balasan: %w", err)
 	}
 
-	return updatedDoc.toModel(), nil
+	count, err := r.coll.CountDocuments(ctx, bson.M{"_id": oid})
+	if err != nil {
+		return model.Review{}, fmt.Errorf("memeriksa ulasan: %w", err)
+	}
+	if count == 0 {
+		return model.Review{}, ErrNotFound
+	}
+	return model.Review{}, ErrReplyLimit
 }
 
+// MarkHelpful menandai ulasan sebagai membantu, maksimal sekali per orang.
+//
+// Tiga syarat di dalam filter: ulasannya ada, bukan milik pemberi nilai, dan
+// pemberi nilai belum tercatat di helpful_by. Bila ketiganya terpenuhi,
+// $addToSet mencatat pemberi nilai dan $inc menambah hitungan - dalam satu
+// operasi atomik. Mengirim request yang sama dua kali tidak menambah hitungan
+// dua kali.
 func (r *reviewMongoRepository) MarkHelpful(ctx context.Context, id string, userID int) (model.Review, error) {
 	oid, err := parseID(id)
 	if err != nil {
 		return model.Review{}, err
 	}
 
-	filter := bson.M{
-		"_id":        oid,
-		"user_id":    bson.M{"$ne": userID},
-		"helpful_by": bson.M{"$ne": userID},
-	}
-
-	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
-	var updatedDoc reviewDocument
+	var updated reviewDocument
 	err = r.coll.FindOneAndUpdate(
 		ctx,
-		filter,
 		bson.M{
-			"$inc":  bson.M{"helpful_count": 1},
-			"$push": bson.M{"helpful_by": userID},
+			"_id":        oid,
+			"user_id":    bson.M{"$ne": userID},
+			"helpful_by": bson.M{"$ne": userID},
 		},
-		opts,
-	).Decode(&updatedDoc)
+		bson.M{
+			"$addToSet": bson.M{"helpful_by": userID},
+			"$inc":      bson.M{"helpful_count": 1},
+		},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&updated)
+	if err == nil {
+		return updated.toModel(), nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return model.Review{}, fmt.Errorf("menilai ulasan: %w", err)
+	}
 
-	if err != nil {
+	// Tidak ada dokumen yang cocok. Cari tahu syarat mana yang gagal.
+	var current reviewDocument
+	if err := r.coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&current); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			var existing reviewDocument
-			if errCheck := r.coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&existing); errCheck != nil {
-				return model.Review{}, ErrNotFound
-			}
-			if existing.UserID == userID {
-				return model.Review{}, ErrOwnReview
-			}
-			return model.Review{}, ErrAlreadyVoted
+			return model.Review{}, ErrNotFound
 		}
-		return model.Review{}, fmt.Errorf("menandai ulasan bermanfaat: %w", err)
+		return model.Review{}, fmt.Errorf("memeriksa ulasan: %w", err)
 	}
-
-	return updatedDoc.toModel(), nil
-}
-
-func (r *reviewMongoRepository) Summary(ctx context.Context, courseID int) (model.ReviewSummary, error) {
-	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"course_id": courseID}}},
-		{{Key: "$facet", Value: bson.M{
-			"stats": bson.A{
-				bson.M{"$group": bson.M{
-					"_id":       nil,
-					"count":     bson.M{"$sum": 1},
-					"avgRating": bson.M{"$avg": "$rating"},
-				}},
-			},
-			"distribution": bson.A{
-				bson.M{"$group": bson.M{
-					"_id":   "$rating",
-					"count": bson.M{"$sum": 1},
-				}},
-			},
-			"top_tags": bson.A{
-				bson.M{"$unwind": "$tags"},
-				bson.M{"$group": bson.M{
-					"_id":   "$tags",
-					"count": bson.M{"$sum": 1},
-				}},
-				bson.M{"$sort": bson.M{"count": -1, "_id": 1}},
-				bson.M{"$limit": 5},
-			},
-		}}},
+	if current.UserID == userID {
+		return model.Review{}, ErrOwnReview
 	}
-
-	cursor, err := r.coll.Aggregate(ctx, pipeline)
-	if err != nil {
-		return model.ReviewSummary{}, fmt.Errorf("menghitung ringkasan ulasan: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	type summaryResult struct {
-		Stats []struct {
-			Count     int     `bson:"count"`
-			AvgRating float64 `bson:"avgRating"`
-		} `bson:"stats"`
-		Distribution []struct {
-			Rating int `bson:"_id"`
-			Count  int `bson:"count"`
-		} `bson:"distribution"`
-		TopTags []struct {
-			Tag   string `bson:"_id"`
-			Count int    `bson:"count"`
-		} `bson:"top_tags"`
-	}
-
-	var results []summaryResult
-	if err := cursor.All(ctx, &results); err != nil {
-		return model.ReviewSummary{}, fmt.Errorf("membaca ringkasan ulasan: %w", err)
-	}
-
-	distMap := map[string]int{"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
-	summary := model.ReviewSummary{
-		CourseID:     courseID,
-		Distribution: distMap,
-		TopTags:      []model.TagCount{},
-	}
-
-	if len(results) == 0 || len(results[0].Stats) == 0 {
-		return summary, nil
-	}
-
-	summary.Count = results[0].Stats[0].Count
-	summary.AverageRating = results[0].Stats[0].AvgRating
-
-	for _, d := range results[0].Distribution {
-		distMap[fmt.Sprintf("%d", d.Rating)] = d.Count
-	}
-	summary.Distribution = distMap
-
-	for _, t := range results[0].TopTags {
-		summary.TopTags = append(summary.TopTags, model.TagCount{
-			Tag:   t.Tag,
-			Total: t.Count,
-		})
-	}
-
-	return summary, nil
+	return model.Review{}, ErrAlreadyVoted
 }
