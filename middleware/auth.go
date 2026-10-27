@@ -3,10 +3,10 @@ package middleware
 import (
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/limiter"
 
 	"latihan-fiber2/helper"
 )
@@ -26,7 +26,7 @@ func RequireAuth(jwtManager *helper.JWTManager) fiber.Handler {
 		authUser, err := jwtManager.Parse(token)
 		if err != nil {
 			c.Set("WWW-Authenticate", `Bearer realm="api"`)
-			
+
 			// Membedakan "kedaluwarsa" dari "tidak valid" aman dilakukan:
 			// client memang perlu tahu kapan harus memanggil /auth/refresh.
 			if errors.Is(err, helper.ErrExpiredToken) {
@@ -63,15 +63,39 @@ func bearerToken(c *fiber.Ctx) (string, error) {
 // Tanpa pembatasan ini, penyerang dapat mencoba ribuan password per menit
 // (serangan brute force) tanpa hambatan apa pun.
 func LoginRateLimiter() fiber.Handler {
-	return limiter.New(limiter.Config{
-		Max:        5,
-		Expiration: 1 * time.Minute,
-		KeyGenerator: func(c *fiber.Ctx) string {
-			return c.IP()
-		},
-		LimitReached: func(c *fiber.Ctx) error {
+	type clientLimit struct {
+		count   int
+		resetAt time.Time
+	}
+ 
+	const maxAttempts = 5
+	var mu sync.Mutex
+	clients := make(map[string]clientLimit)
+
+	return func(c *fiber.Ctx) error {
+		now := time.Now()
+		ip := c.IP()
+
+		mu.Lock()
+		for key, limit := range clients {
+			if !now.Before(limit.resetAt) {
+				delete(clients, key)
+			}
+		}
+
+		limit := clients[ip]
+		if limit.count >= maxAttempts {
+			mu.Unlock()
 			c.Set("Retry-After", "60")
 			return helper.Fail(c, fiber.StatusTooManyRequests, "terlalu banyak percobaan login, coba lagi dalam satu menit")
-		},
-	})
+		}
+		if limit.count == 0 {
+			limit.resetAt = now.Add(time.Minute)
+		}
+		limit.count++
+		clients[ip] = limit
+		mu.Unlock()
+
+		return c.Next()
+	}
 }
