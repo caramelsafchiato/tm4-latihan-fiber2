@@ -22,8 +22,9 @@ type Dependencies struct {
 	AuthService    *service.AuthService
 	StudentService *service.StudentService
 	JuaraService   *service.JuaraService
-	CourseService  *service.CourseService 
-	Mongo *mongo.Client
+	CourseService  *service.CourseService
+	Mongo          *mongo.Client
+	ReviewService  *service.ReviewService
 }
 
 func Register(app *fiber.App, deps Dependencies) {
@@ -111,26 +112,41 @@ func Register(app *fiber.App, deps Dependencies) {
 	courses.Delete("/:id/enroll", deps.CourseService.Drop)
 	courses.Patch("/:id", middleware.RequirePermission(perms, "course:manage"), deps.CourseService.UpdateQuota)
 
+	courses.Get("/:id/reviews", deps.ReviewService.ListByCourse)
+	courses.Get("/:id/reviews/summary", deps.ReviewService.Summary)
+	courses.Post("/:id/reviews", deps.ReviewService.Create)
+
 	enrollments := api.Group("/enrollments",
 		middleware.RequireJSON,
 		middleware.RequireAuth(deps.JWT),
 	)
 	enrollments.Post("/swap", deps.CourseService.Swap)
+
+	// --- ulasan kelas (MongoDB) ---
+	reviews := api.Group("/reviews",
+		middleware.RequireJSON,
+		middleware.RequireAuth(deps.JWT),
+	)
+	reviews.Get("/:id", deps.ReviewService.Get)
+	reviews.Patch("/:id", deps.ReviewService.Update)
+	reviews.Delete("/:id", deps.ReviewService.Delete)
+	reviews.Post("/:id/replies", deps.ReviewService.Reply)
+	reviews.Post("/:id/helpful", deps.ReviewService.MarkHelpful)
 }
 
 func healthCheck(pool *pgxpool.Pool, mongoClient *mongo.Client) fiber.Handler {
-    return func(c *fiber.Ctx) error {
-        ctx, cancel := context.WithTimeout(c.UserContext(), 2*time.Second)
-        defer cancel()
+	return func(c *fiber.Ctx) error {
+		ctx, cancel := context.WithTimeout(c.UserContext(), 2*time.Second)
+		defer cancel()
 
-        if err := pool.Ping(ctx); err != nil {
-            return helper.ServiceUnavailable("PostgreSQL tidak dapat dihubungi")
-        }
+		if err := pool.Ping(ctx); err != nil {
+			return helper.ServiceUnavailable("PostgreSQL tidak dapat dihubungi")
+		}
 
-        if err := mongoClient.Ping(ctx, nil); err != nil {
-            return helper.ServiceUnavailable("MongoDB tidak dapat dihubungi")
-        }
+		if err := mongoClient.Ping(ctx, nil); err != nil {
+			return helper.ServiceUnavailable("MongoDB tidak dapat dihubungi")
+		}
 
-        return helper.Success(c, fiber.StatusOK, "server, PostgreSQL, dan MongoDB berjalan", nil)
-    }
+		return helper.Success(c, fiber.StatusOK, "server, PostgreSQL, dan MongoDB berjalan", nil)
+	}
 }
