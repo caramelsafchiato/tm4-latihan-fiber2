@@ -32,13 +32,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Database
+	// 2. Database PostgreSQL
 	pool, err := database.NewPool(context.Background())
 	if err != nil {
 		logger.Error("gagal terhubung ke database", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	defer pool.Close()
+
+	// 2b. Database MongoDB (Tambahan Langkah 3)
+	mongoClient, err := database.NewMongoClient(context.Background())
+	if err != nil {
+		logger.Error("gagal terhubung ke MongoDB", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = mongoClient.Disconnect(ctx)
+	}()
+
+	_ = mongoClient.Database(config.GetEnv("MONGO_DATABASE", "praktikum_backend"))
 
 	// 3. Persiapan JWT
 	jwtManager := helper.NewJWTManager(
@@ -57,7 +71,7 @@ func main() {
 	// -- User, Auth & Role (Baru) --
 	userRepository := repository.NewUserRepository(pool)
 	tokenRepository := repository.NewTokenRepository(pool)
-	roleRepository := repository.NewRoleRepository(pool) 
+	roleRepository := repository.NewRoleRepository(pool)
 
 	// -- Course & Transaksi (Tambahan Modul 9) --
 	txManager := repository.NewTxManager(pool)
@@ -91,6 +105,7 @@ func main() {
 		StudentService: studentService,
 		JuaraService:   juaraService,
 		CourseService:  courseService,
+		Mongo:          mongoClient, // <-- Tambahan koneksi MongoDB
 	}
 
 	// 6. Inisialisasi Aplikasi
