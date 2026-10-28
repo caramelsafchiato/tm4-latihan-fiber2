@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,99 +11,163 @@ import (
 )
 
 const baseURL = "http://localhost:3000/api/v1"
-const dummyPassword = "password"
 
-func main() {
-	mode := flag.String("mode", "crowd", "Mode pengujian: crowd, credits, swap, supervisor")
-	flag.Parse()
-
-	fmt.Printf("Memulai uji beban mode: %s\n", *mode)
-
-	if *mode == "crowd" {
-		runCrowdTest()
-	} else {
-		fmt.Println("Mode belum diimplementasikan di skrip basic ini.")
-	}
+type LoginResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Token string `json:"token"`
+	} `json:"data"`
 }
 
-func getDummyToken(studentID int) string {
-	username := fmt.Sprintf("mhs%03d", studentID)
-	loginReq := map[string]string{"username": username, "password": dummyPassword}
-	reqBody, _ := json.Marshal(loginReq)
+func getToken(username, password string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"username": username,
+		"password": password,
+	})
 
-	resp, err := http.Post(baseURL+"/auth/login", "application/json", bytes.NewBuffer(reqBody))
+	resp, err := http.Post(baseURL+"/auth/login", "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		fmt.Printf("User %s gagal: Server mati atau URL salah (%v)\n", username, err)
-		return ""
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
+	var loginRes LoginResponse
+	_ = json.Unmarshal(respBody, &loginRes)
 
-	if resp.StatusCode != 200 {
-		fmt.Printf("User %s gagal login! Respons Server: %s\n", username, string(bytes.TrimSpace(bodyBytes)))
-		return ""
+	if !loginRes.Success {
+		return "", fmt.Errorf("gagal login user %s: %s", username, string(respBody))
 	}
-
-	var result struct {
-		Data struct {
-			AccessToken string `json:"access_token"`
-			Token       string `json:"token"`
-		} `json:"data"`
-	}
-	json.Unmarshal(bodyBytes, &result)
-
-	if result.Data.AccessToken != "" {
-		return result.Data.AccessToken
-	}
-	return result.Data.Token
+	return loginRes.Data.Token, nil
 }
 
-func runCrowdTest() {
+func main() {
+	fmt.Println("==================================================")
+	fmt.Println("   PENGUJIAN BEBAN & CONCURRENCY (MODUL 10)")
+	fmt.Println("==================================================")
+
+	// 1. Ambil Token Mahasiswa
+	token, err := getToken("alisyaaninda", "alisyaaninda123")
+	if err != nil {
+		fmt.Printf("Error Login: %v\n", err)
+		return
+	}
+	fmt.Println("[OK] Login Berhasil. Menjalankan pengujian serentak...\n")
+
+	// 2. Pengujian Concurrency Batas 20 Proyek (10 Request Serentak)
+	fmt.Println("--- 1. Uji Penambahan 10 Proyek Serentak ---")
+	testPortfolioProjectLimit(token)
+
+	// 3. Pengujian Race Condition Vote Helpful (1 User, 20 Request Serentak)
+	fmt.Println("\n--- 2. Uji Race Condition Vote (1 User 20 Req Serentak) ---")
+	testRaceConditionHelpful(token)
+}
+
+func testPortfolioProjectLimit(token string) {
+	studentID := 2 // Sesuaikan dengan ID Mahasiswa di PostgreSQL kamu
+	url := fmt.Sprintf("%s/students/%d/portfolio/projects", baseURL, studentID)
+
 	var wg sync.WaitGroup
 	startGun := make(chan struct{})
-	totalUsers := 60
-	courseID := 1 
+	totalReq := 10
 
-	fmt.Printf("Menyiapkan %d goroutine untuk menyerang endpoint pendaftaran...\n", totalUsers)
+	var successCount, conflictCount, otherCount int
+	var mu sync.Mutex
 
-	for i := 1; i <= totalUsers; i++ {
+	for i := 1; i <= totalReq; i++ {
 		wg.Add(1)
-		go func(studentID int) {
+		go func(reqNum int) {
 			defer wg.Done()
 
-			token := getDummyToken(studentID)
-			if token == "" {
-				<-startGun 
-				return
-			}
-
+			// Menunggu sinyal tembak bersamaan
 			<-startGun
 
-			req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/courses/%d/enroll", baseURL, courseID), nil)
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("Content-Type", "application/json")
+			body, _ := json.Marshal(map[string]interface{}{
+				"title":        fmt.Sprintf("Proyek LoadTest #%d", reqNum),
+				"technologies": []string{"Go", "Fiber", "MongoDB"},
+				"link":         "https://github.com/caramelsafchiato",
+				"year":         2026,
+			})
 
-			client := &http.Client{Timeout: 10 * time.Second}
+			req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+
+			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Do(req)
 			if err != nil {
-				fmt.Printf("User %d: Error %v\n", studentID, err)
+				fmt.Printf("[Req #%d] Error: %v\n", reqNum, err)
 				return
 			}
 			defer resp.Body.Close()
 
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode == 201 {
-				fmt.Printf("User %d: BERHASIL (201)\n", studentID)
+			mu.Lock()
+			if resp.StatusCode == http.StatusCreated {
+				successCount++
+				fmt.Printf("[Req #%d] -> 201 Created (Proyek Berhasil Ditambah)\n", reqNum)
+			} else if resp.StatusCode == http.StatusConflict {
+				conflictCount++
+				fmt.Printf("[Req #%d] -> 409 Conflict (Ditolak: Kuota Max 20 Terpenuhi)\n", reqNum)
 			} else {
-				fmt.Printf("User %d: GAGAL (%d) - %s\n", studentID, resp.StatusCode, string(bytes.TrimSpace(body)))
+				otherCount++
+				fmt.Printf("[Req #%d] -> Status HTTP %d\n", reqNum, resp.StatusCode)
 			}
+			mu.Unlock()
 		}(i)
 	}
 
-	time.Sleep(3 * time.Second)
-	fmt.Println("\nDOR! Semua request ditembakkan bersamaan!")
+	// Pelepasan sinyal agar 10 Goroutines jalan bersamaan
 	close(startGun)
 	wg.Wait()
-	fmt.Println("Uji beban selesai.")
+
+	fmt.Printf("\n--> REKAP BUKTI LIMIT PROYEK: 201 Created = %d | 409 Conflict = %d | Lainnya = %d\n",
+		successCount, conflictCount, otherCount)
+}
+
+func testRaceConditionHelpful(token string) {
+	// Ganti string ini dengan ID ulasan ObjectID MongoDB yang valid di DB-mu
+	reviewID := "66e01a2b3c4d5e6f7a8b9c0d" 
+	url := fmt.Sprintf("%s/reviews/%s/helpful", baseURL, reviewID)
+
+	var wg sync.WaitGroup
+	startGun := make(chan struct{})
+	totalReq := 20
+
+	var successCount, conflictCount int
+	var mu sync.Mutex
+
+	for i := 1; i <= totalReq; i++ {
+		wg.Add(1)
+		go func(reqNum int) {
+			defer wg.Done()
+
+			<-startGun
+
+			req, _ := http.NewRequest("POST", url, nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			mu.Lock()
+			if resp.StatusCode == http.StatusOK {
+				successCount++
+				fmt.Printf("[Req #%d] -> 200 OK (Vote Berhasil)\n", reqNum)
+			} else if resp.StatusCode == http.StatusConflict {
+				conflictCount++
+				fmt.Printf("[Req #%d] -> 409 Conflict (Ditolak: Sudah Vote/Ulasan Sendiri)\n", reqNum)
+			}
+			mu.Unlock()
+		}(i)
+	}
+
+	close(startGun)
+	wg.Wait()
+
+	fmt.Printf("\n--> REKAP BUKTI RACE CONDITION: 200 OK = %d | 409 Conflict = %d\n",
+		successCount, conflictCount)
 }
