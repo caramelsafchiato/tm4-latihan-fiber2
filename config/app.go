@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
@@ -35,7 +36,11 @@ func newErrorHandler(logger *slog.Logger) fiber.ErrorHandler {
 		status := fiber.StatusInternalServerError
 		message := "terjadi error pada server"
 
-		if e, ok := err.(*fiber.Error); ok {
+		var appErr *helper.AppError
+		if errors.As(err, &appErr) {
+			status = appErr.Status
+			message = appErr.Message
+		} else if e, ok := err.(*fiber.Error); ok {
 			status = e.Code
 			message = e.Message
 		}
@@ -46,6 +51,9 @@ func newErrorHandler(logger *slog.Logger) fiber.ErrorHandler {
 			slog.String("error", err.Error()),
 		)
 
+		if appErr != nil && len(appErr.Fields) > 0 {
+			return helper.FailValidation(c, appErr.Fields)
+		}
 		return helper.Fail(c, status, message)
 	}
 }
