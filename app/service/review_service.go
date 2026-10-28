@@ -48,14 +48,15 @@ func (s *ReviewService) Create(c *fiber.Ctx) error {
 		return helper.BadRequest("body harus berupa JSON yang valid")
 	}
 	req.Comment = strings.TrimSpace(req.Comment)
-	req.Tags = NormalizeTags(req.Tags)
-	if req.Rating < 1 || req.Rating > 5 || req.Comment == "" {
-		return helper.BadRequest("rating harus antara 1 dan 5 dan komentar tidak boleh kosong")
+
+	// Validasi aturan ulasan (Rating 1-5, Comment min 10 char, Tags max 5 item) -> Status 422
+	if err := ValidateReviewInput(req.Rating, req.Comment, req.Tags); err != nil {
+		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 	}
 
-	// Tidak ada FOREIGN KEY yang menghubungkan MongoDB dengan PostgreSQL.
-	// Pemeriksaan "kelasnya ada" dan "mahasiswa ini peserta kelasnya" harus
-	// dilakukan sendiri oleh service, dengan bertanya ke PostgreSQL.
+	req.Tags = NormalizeTags(req.Tags)
+
+	// Pemeriksaan "kelasnya ada" dan "mahasiswa ini peserta kelasnya"
 	if _, err := s.courses.FindByID(ctx, courseID); err != nil {
 		return translateReviewError(err)
 	}
@@ -149,7 +150,12 @@ func (s *ReviewService) Get(c *fiber.Ctx) error {
 	ctx, cancel := helper.RequestContext(c)
 	defer cancel()
 
-	review, err := s.reviews.FindByID(ctx, c.Params("id"))
+	id := c.Params("id")
+	if len(id) != 24 {
+		return fiber.NewError(fiber.StatusBadRequest, "id ulasan tidak valid")
+	}
+
+	review, err := s.reviews.FindByID(ctx, id)
 	if err != nil {
 		return translateReviewError(err)
 	}
@@ -207,7 +213,7 @@ func (s *ReviewService) Delete(c *fiber.Ctx) error {
 		return helper.Unauthorized("belum terautentikasi")
 	}
 
-	anyOwner := s.perms.Can(current.Role, "review:moderate")
+	anyOwner := current.Role == "admin" || s.perms.Can(current.Role, "review:moderate")
 	if err := s.reviews.Delete(ctx, c.Params("id"), current.UserID, anyOwner); err != nil {
 		return translateReviewError(err)
 	}
@@ -264,7 +270,7 @@ func (s *ReviewService) MarkHelpful(c *fiber.Ctx) error {
 func translateReviewError(err error) error {
 	switch {
 	case errors.Is(err, repository.ErrInvalidID):
-		return helper.BadRequest("id ulasan tidak valid")
+		return fiber.NewError(fiber.StatusBadRequest, "id ulasan tidak valid")
 	case errors.Is(err, repository.ErrNotFound):
 		return helper.NotFound("data tidak ditemukan")
 	case errors.Is(err, repository.ErrDuplicate):
