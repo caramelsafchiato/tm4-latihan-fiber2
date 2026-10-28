@@ -14,6 +14,9 @@ import (
 	"latihan-fiber2/database"
 	"latihan-fiber2/helper"
 	"latihan-fiber2/route"
+
+	mongoV1 "go.mongodb.org/mongo-driver/mongo"
+	mongoV1Options "go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const minSecretLength = 32
@@ -85,6 +88,23 @@ func main() {
 		os.Exit(1)
 	}
 
+
+	portfolioClient, err := mongoV1.Connect(
+		context.Background(),
+		mongoV1Options.Client().ApplyURI(config.GetEnv("MONGO_URI", "mongodb://localhost:27017")),
+	)
+	if err != nil {
+		logger.Error("gagal terhubung ke MongoDB untuk portfolio", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = portfolioClient.Disconnect(ctx)
+	}()
+	portfolioDB := portfolioClient.Database(config.GetEnv("MONGO_DATABASE", "praktikum_backend"))
+	portfolioRepository := repository.NewPortfolioRepository(portfolioDB)
+
 	// Pemetaan role ke permission dibaca SEKALI saat aplikasi menyala.
 	rawPermissions, err := roleRepository.LoadPermissions(context.Background())
 	if err != nil {
@@ -101,19 +121,21 @@ func main() {
 		time.Duration(config.GetEnvInt("JWT_REFRESH_TTL_DAYS", 7))*24*time.Hour,
 	)
 	reviewService := service.NewReviewService(reviewRepository, courseRepository, permissions)
+	portfolioService := service.NewPortfolioService(portfolioRepository, studentRepository)
 
 	// 5. Rakit semua dependencies untuk rute
 	deps := route.Dependencies{
-		Pool:           pool,
-		JWT:            jwtManager,
-		Permissions:    permissions,
-		UserService:    userService,
-		AuthService:    authService,
-		StudentService: studentService,
-		JuaraService:   juaraService,
-		CourseService:  courseService,
-		Mongo:          mongoClient,
-		ReviewService:  reviewService,
+		Pool:             pool,
+		JWT:              jwtManager,
+		Permissions:      permissions,
+		UserService:      userService,
+		AuthService:      authService,
+		StudentService:   studentService,
+		JuaraService:     juaraService,
+		CourseService:    courseService,
+		Mongo:            mongoClient,
+		ReviewService:    reviewService,
+		PortfolioService: portfolioService,
 	}
 
 	// 6. Inisialisasi Aplikasi
